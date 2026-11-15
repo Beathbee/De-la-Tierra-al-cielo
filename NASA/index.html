@@ -1,0 +1,184 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Luna vs Marte desde tu ciudad</title>
+<style>
+  :root { --bg:#0b1020; --card:#151c33; --txt:#e8ecf8; --mut:#8b95b5; --luna:#d8dcea; --marte:#e2674a; --line:#263052; }
+  * { box-sizing:border-box; }
+  body { margin:0; font-family:system-ui,sans-serif; background:var(--bg); color:var(--txt); }
+  header { padding:24px 16px 8px; text-align:center; }
+  h1 { margin:0 0 4px; font-size:1.8rem; }
+  .sub { color:var(--mut); margin:0; }
+  main { max-width:1000px; margin:auto; padding:16px; }
+  .panel { background:var(--card); border:1px solid var(--line); border-radius:14px; padding:16px; margin-bottom:16px; }
+  .row { display:flex; gap:8px; flex-wrap:wrap; }
+  input, button { font:inherit; padding:10px 12px; border-radius:8px; border:1px solid var(--line); background:#0f1530; color:var(--txt); }
+  input[type=text] { flex:1; min-width:200px; }
+  button { background:#3b5bdb; border-color:#3b5bdb; cursor:pointer; }
+  button:hover { background:#4c6ef5; }
+  #resultados { list-style:none; padding:0; margin:10px 0 0; }
+  #resultados li { padding:8px 10px; border-radius:8px; cursor:pointer; color:var(--mut); }
+  #resultados li:hover { background:#1d2646; color:var(--txt); }
+  .grid { display:grid; grid-template-columns:1fr 1fr; gap:16px; }
+  @media (max-width:640px) { .grid { grid-template-columns:1fr; } }
+  .cuerpo h2 { margin:0 0 10px; }
+  .luna h2 { color:var(--luna); } .marte h2 { color:var(--marte); }
+  .m { display:flex; justify-content:space-between; padding:6px 0; border-bottom:1px solid var(--line); }
+  .m span:first-child { color:var(--mut); }
+  .vis { display:inline-block; padding:2px 8px; border-radius:99px; font-size:.8rem; }
+  .si { background:#1f5f3a; } .no { background:#5a2a2a; }
+  table { width:100%; border-collapse:collapse; }
+  th, td { text-align:left; padding:8px; border-bottom:1px solid var(--line); }
+  th { color:var(--mut); font-weight:500; }
+  canvas { width:100%; height:240px; display:block; }
+  .imgs { display:grid; grid-template-columns:repeat(auto-fill,minmax(150px,1fr)); gap:8px; }
+  .imgs img { width:100%; border-radius:8px; }
+  .leyenda span { margin-right:14px; font-size:.9rem; }
+  #estado { color:var(--mut); margin:8px 0 0; }
+  #error { color:#ff8787; }
+</style>
+</head>
+<body>
+<header>
+  <h1>🌙 Luna vs Marte 🔴</h1>
+  <p class="sub">Compáralos desde cualquier ciudad del mundo · datos NASA/JPL</p>
+</header>
+
+<main>
+  <section class="panel">
+    <div class="row">
+      <input type="text" id="ciudad" placeholder="Escribe una ciudad (ej. Temuco, Tokio, Madrid)" value="Temuco">
+      <input type="date" id="fecha">
+      <button id="buscar">Buscar ciudad</button>
+    </div>
+    <ul id="resultados"></ul>
+    <p id="estado"></p>
+    <p id="error"></p>
+  </section>
+
+  <div id="salida" hidden>
+    <h3 id="titulo"></h3>
+    <div class="grid" id="tarjetas"></div>
+
+    <section class="panel">
+      <h3>Elevación sobre el horizonte (24 h, UTC)</h3>
+      <canvas id="grafico"></canvas>
+      <p class="leyenda"><span style="color:var(--luna)">● Luna</span><span style="color:var(--marte)">● Marte</span><span style="color:var(--mut)">Sobre 0° = visible</span></p>
+    </section>
+
+    <section class="panel">
+      <h3>Comparación física</h3>
+      <table id="fisico"></table>
+    </section>
+
+    <section class="panel">
+      <h3>Imágenes de la NASA</h3>
+      <div class="grid">
+        <div><h4>Luna</h4><div class="imgs" id="img-luna"></div></div>
+        <div><h4>Marte</h4><div class="imgs" id="img-marte"></div></div>
+      </div>
+    </section>
+  </div>
+</main>
+
+<script>
+const $ = id => document.getElementById(id);
+const fmt = (n, d = 0) => n.toLocaleString("es-CL", { maximumFractionDigits: d });
+const dir = az => ["N","NE","E","SE","S","SO","O","NO"][Math.floor((az + 22.5) / 45) % 8];
+$("fecha").value = new Date().toISOString().slice(0, 10);
+
+async function api(url) {
+  const r = await fetch(url);
+  const j = await r.json();
+  if (!r.ok) throw new Error(j.error || "Error del servidor");
+  return j;
+}
+
+async function buscarCiudad() {
+  $("error").textContent = "";
+  $("estado").textContent = "Buscando ciudad…";
+  try {
+    const lista = await api("/api/ciudades?q=" + encodeURIComponent($("ciudad").value));
+    $("estado").textContent = lista.length ? "Elige una:" : "Sin resultados.";
+    $("resultados").innerHTML = "";
+    lista.forEach(c => {
+      const li = document.createElement("li");
+      li.textContent = [c.nombre, c.region, c.pais].filter(Boolean).join(", ");
+      li.onclick = () => comparar(c);
+      $("resultados").appendChild(li);
+    });
+    if (lista.length === 1) comparar(lista[0]);
+  } catch (e) { $("error").textContent = e.message; }
+}
+
+async function comparar(c) {
+  $("resultados").innerHTML = "";
+  $("estado").textContent = "Consultando NASA/JPL…";
+  $("error").textContent = "";
+  try {
+    const d = await api(`/api/comparar?lat=${c.lat}&lon=${c.lon}&fecha=${$("fecha").value}`);
+    $("estado").textContent = "";
+    mostrar(c, d);
+    imagenes();
+  } catch (e) { $("estado").textContent = ""; $("error").textContent = e.message; }
+}
+
+function mostrar(c, d) {
+  $("salida").hidden = false;
+  $("titulo").textContent = `Desde ${c.nombre}, ${c.pais} (${c.lat.toFixed(2)}, ${c.lon.toFixed(2)})`;
+  const h = new Date().getUTCHours();
+  const i = $("fecha").value === new Date().toISOString().slice(0, 10) ? Math.min(h, d.datos.Luna.length - 1) : 12;
+
+  $("tarjetas").innerHTML = ["Luna", "Marte"].map(n => {
+    const x = d.datos[n][i], vis = x.elevacion > 0;
+    return `<div class="panel cuerpo ${n.toLowerCase()}">
+      <h2>${n === "Luna" ? "🌙" : "🔴"} ${n} <span class="vis ${vis ? "si" : "no"}">${vis ? "visible" : "bajo el horizonte"}</span></h2>
+      <div class="m"><span>Hora (UTC)</span><b>${x.hora}</b></div>
+      <div class="m"><span>Elevación</span><b>${x.elevacion.toFixed(1)}°</b></div>
+      <div class="m"><span>Dirección</span><b>${x.azimut.toFixed(0)}° (${dir(x.azimut)})</b></div>
+      <div class="m"><span>Distancia</span><b>${fmt(x.distancia_km)} km</b></div>
+      <div class="m"><span>La luz tarda</span><b>${x.luz_min.toFixed(2)} min</b></div>
+      <div class="m"><span>Magnitud aparente</span><b>${x.magnitud.toFixed(2)}</b></div>
+      <div class="m"><span>Iluminación</span><b>${x.iluminacion.toFixed(1)} %</b></div>
+    </div>`;
+  }).join("");
+
+  $("fisico").innerHTML = "<tr><th></th><th>Luna</th><th>Marte</th></tr>" +
+    d.fisico.map(f => `<tr><th>${f[0]}</th><td>${f[1]}</td><td>${f[2]}</td></tr>`).join("");
+
+  grafico(d.datos);
+}
+
+function grafico(datos) {
+  const cv = $("grafico"), dpr = window.devicePixelRatio || 1;
+  const W = cv.clientWidth, H = cv.clientHeight;
+  cv.width = W * dpr; cv.height = H * dpr;
+  const g = cv.getContext("2d"); g.scale(dpr, dpr); g.clearRect(0, 0, W, H);
+  const P = 34, min = -90, max = 90;
+  const X = k => P + (k / 24) * (W - P - 8), Y = v => H - 20 - ((v - min) / (max - min)) * (H - 30);
+  g.strokeStyle = "#263052"; g.fillStyle = "#8b95b5"; g.font = "11px system-ui";
+  [-90, -45, 0, 45, 90].forEach(v => { g.beginPath(); g.moveTo(P, Y(v)); g.lineTo(W - 8, Y(v)); g.lineWidth = v === 0 ? 1.5 : .5; g.stroke(); g.fillText(v + "°", 2, Y(v) + 4); });
+  for (let k = 0; k <= 24; k += 6) g.fillText(String(k).padStart(2, "0") + "h", X(k) - 10, H - 4);
+  [["Luna", "#d8dcea"], ["Marte", "#e2674a"]].forEach(([n, col]) => {
+    g.strokeStyle = col; g.lineWidth = 2; g.beginPath();
+    datos[n].forEach((p, k) => k ? g.lineTo(X(k), Y(p.elevacion)) : g.moveTo(X(k), Y(p.elevacion)));
+    g.stroke();
+  });
+}
+
+async function imagenes() {
+  for (const [id, q] of [["img-luna", "moon surface"], ["img-marte", "mars surface rover"]]) {
+    try {
+      const l = await api("/api/imagenes?q=" + encodeURIComponent(q));
+      $(id).innerHTML = l.map(i => `<img src="${i.url}" alt="${i.titulo}" title="${i.titulo}">`).join("");
+    } catch (_) {}
+  }
+}
+
+$("buscar").onclick = buscarCiudad;
+$("ciudad").addEventListener("keydown", e => e.key === "Enter" && buscarCiudad());
+</script>
+</body>
+</html>
